@@ -1,5 +1,6 @@
 const std = @import("std");
 const Parser = @import("parser.zig");
+const Expander = @import("expander.zig");
 const Builtin = @import("builtin.zig").Builtin;
 const Exec = @import("exec.zig");
 
@@ -38,18 +39,28 @@ pub const Shell = struct {
             try stdout.print("$ ", .{});
             const input = (try stdin.takeDelimiter('\n')) orelse continue;
 
-            const argv = try Parser.parseArgv(allocator, input);
+            const parsed = Parser.parse(allocator, input) catch |err| switch (err) {
+                error.UnclosedQuote => {
+                    try stdout.print("shell: unclosed quote\n", .{});
+                    continue :repl;
+                },
+                else => return err,
+            };
+            defer parsed.deinit(allocator);
 
-            if (argv.len == 0) continue :repl;
-            const command = argv[0];
+            const expanded = try Expander.expand(allocator, self.env_home, parsed.tokens);
+            defer expanded.deinit(allocator);
+
+            if (expanded.argv.len == 0) continue :repl;
+            const command = expanded.argv[0];
 
             if (Builtin.fromString(command)) |builtin| {
-                builtin.execute(self, allocator, stdout, argv) catch |err| switch (err) {
+                builtin.execute(self, allocator, stdout, expanded.argv) catch |err| switch (err) {
                     error.ShellExit => return,
                     else => return err,
                 };
             } else if (try Exec.findInPath(allocator, io, self.env_path, command)) |_| {
-                try Exec.spawn(self, stdout, argv);
+                try Exec.spawn(self, stdout, expanded.argv);
             } else {
                 try stdout.print("{s}: command not found\n", .{command});
             }

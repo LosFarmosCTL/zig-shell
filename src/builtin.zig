@@ -40,21 +40,16 @@ pub const Builtin = enum {
                     return try stdout.print("Too many arguments for cd command\n", .{});
                 }
 
-                var path: []const u8 = "~";
-                if (argv.len == 2) path = argv[1];
-
-                const resolved_path = resolveHome(
-                    allocator,
-                    path,
-                    shell.env_home,
-                ) catch |err| switch (err) {
-                    error.HomeNotSet => {
+                var path: []const u8 = "";
+                if (argv.len == 2) path = argv[1] else {
+                    if (shell.env_home.len == 0) {
                         return try stdout.print("cd: HOME not set\n", .{});
-                    },
-                    else => return err,
-                };
+                    }
 
-                chdir(shell.proc_init.io, resolved_path) catch {
+                    path = shell.env_home;
+                }
+
+                chdir(shell.proc_init.io, path) catch {
                     try stdout.print("cd: {s}: No such file or directory\n", .{path});
                 };
             },
@@ -77,25 +72,6 @@ pub const Builtin = enum {
         }
     }
 };
-
-fn resolveHome(
-    allocator: std.mem.Allocator,
-    path: []const u8,
-    home_path: []const u8,
-) ![]const u8 {
-    return if (std.mem.eql(u8, path, "~")) {
-        if (home_path.len == 0) return error.HomeNotSet;
-        return home_path;
-    } else if (std.mem.startsWith(u8, path, "~/")) {
-        if (home_path.len == 0) return error.HomeNotSet;
-
-        return try std.fmt.allocPrint(
-            allocator,
-            "{s}{s}",
-            .{ home_path, path[1..] },
-        );
-    } else path;
-}
 
 fn chdir(io: std.Io, path: []const u8) !void {
     const dir = std.Io.Dir.cwd().openDir(io, path, .{}) catch return error.DirNotFound;
