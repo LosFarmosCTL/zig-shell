@@ -19,4 +19,13 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
+
+    const run_tests = b.addSystemCommand(&.{
+        b.graph.zig_exe,
+        "test",
+        "src/root.zig",
+    });
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_tests.step);
 }

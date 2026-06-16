@@ -126,3 +126,220 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !ParsedLine {
 
     return try parser.parse();
 }
+
+const testing = std.testing;
+
+const ExpectedSegment = struct {
+    value: []const u8,
+    is_quoted: bool,
+};
+
+fn expectToken(token: Token, expected: []const ExpectedSegment) !void {
+    try testing.expectEqual(expected.len, token.parts.len);
+
+    for (expected, token.parts) |expected_part, actual_part| {
+        try testing.expectEqualSlices(u8, expected_part.value, actual_part.value);
+        try testing.expectEqual(expected_part.is_quoted, actual_part.is_quoted);
+    }
+}
+
+test "parser ignores empty input and unquoted whitespace" {
+    {
+        const parsed = try parse(testing.allocator, "");
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(@as(usize, 0), parsed.tokens.len);
+    }
+
+    {
+        const parsed = try parse(testing.allocator, "  \t   \t");
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(@as(usize, 0), parsed.tokens.len);
+    }
+}
+
+test "parser splits unquoted words on spaces and tabs" {
+    const parsed = try parse(testing.allocator, "echo for\tsen");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "echo", .is_quoted = false },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "for", .is_quoted = false },
+    });
+    try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
+        .{ .value = "sen", .is_quoted = false },
+    });
+}
+
+test "parser ignores repeated leading and trailing whitespace around tokens" {
+    const parsed = try parse(testing.allocator, "  echo   for\t\t sen  ");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "echo", .is_quoted = false },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "for", .is_quoted = false },
+    });
+    try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
+        .{ .value = "sen", .is_quoted = false },
+    });
+}
+
+test "parser preserves whitespace inside quotes" {
+    const parsed = try parse(testing.allocator, "echo \"for sen\" 'for\tsen'");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "echo", .is_quoted = false },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "for sen", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
+        .{ .value = "for\tsen", .is_quoted = true },
+    });
+}
+
+test "parser treats opposite quote characters as literals" {
+    const parsed = try parse(testing.allocator, "\"it's fine\" 'say \"hi\"'");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "it's fine", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "say \"hi\"", .is_quoted = true },
+    });
+}
+
+test "parser preserves mixed quoted and unquoted segments in one token" {
+    const parsed = try parse(
+        testing.allocator,
+        "some/\"*\"/path for\"~\"sen \"~\" ~/\"~\" \"forsen\"\"for\"\"sen\"\"~\"for",
+    );
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 5), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "some/", .is_quoted = false },
+        .{ .value = "*", .is_quoted = true },
+        .{ .value = "/path", .is_quoted = false },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "for", .is_quoted = false },
+        .{ .value = "~", .is_quoted = true },
+        .{ .value = "sen", .is_quoted = false },
+    });
+    try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
+        .{ .value = "~", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[3], &[_]ExpectedSegment{
+        .{ .value = "~/", .is_quoted = false },
+        .{ .value = "~", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[4], &[_]ExpectedSegment{
+        .{ .value = "forsen", .is_quoted = true },
+        .{ .value = "for", .is_quoted = true },
+        .{ .value = "sen", .is_quoted = true },
+        .{ .value = "~", .is_quoted = true },
+        .{ .value = "for", .is_quoted = false },
+    });
+}
+
+test "parser preserves empty quoted arguments" {
+    const parsed = try parse(testing.allocator, "echo \"\" '' a\"\"b");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 4), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "echo", .is_quoted = false },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
+        .{ .value = "", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[3], &[_]ExpectedSegment{
+        .{ .value = "a", .is_quoted = false },
+        .{ .value = "", .is_quoted = true },
+        .{ .value = "b", .is_quoted = false },
+    });
+}
+
+test "parser preserves standalone and adjacent empty quoted arguments" {
+    const parsed = try parse(testing.allocator, "\"\" '' \"\"\"\" ''\"\"");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 4), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
+        .{ .value = "", .is_quoted = true },
+        .{ .value = "", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[3], &[_]ExpectedSegment{
+        .{ .value = "", .is_quoted = true },
+        .{ .value = "", .is_quoted = true },
+    });
+}
+
+test "parser preserves simple quoted segment boundaries" {
+    const parsed = try parse(testing.allocator, "\"a\"b a\"b\" \"a\"\"b\"");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "a", .is_quoted = true },
+        .{ .value = "b", .is_quoted = false },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "a", .is_quoted = false },
+        .{ .value = "b", .is_quoted = true },
+    });
+    try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
+        .{ .value = "a", .is_quoted = true },
+        .{ .value = "b", .is_quoted = true },
+    });
+}
+
+test "parser rejects unclosed quotes" {
+    try testing.expectError(
+        error.UnclosedQuote,
+        parse(testing.allocator, "echo \"unterminated"),
+    );
+
+    try testing.expectError(
+        error.UnclosedQuote,
+        parse(testing.allocator, "echo 'unterminated"),
+    );
+}
+
+test "parser handles allocation failures without leaks" {
+    for (0..32) |fail_index| {
+        var failing_allocator = testing.FailingAllocator.init(testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        const allocator = failing_allocator.allocator();
+
+        const result = parse(allocator, "echo \"for\" sen \"\" tail");
+        if (result) |parsed| {
+            parsed.deinit(allocator);
+        } else |err| switch (err) {
+            error.OutOfMemory => {},
+            else => return err,
+        }
+
+        try testing.expectEqual(failing_allocator.allocated_bytes, failing_allocator.freed_bytes);
+    }
+}
