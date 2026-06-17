@@ -44,6 +44,10 @@ pub const Shell = struct {
                     try stdout.print("shell: unclosed quote\n", .{});
                     continue :repl;
                 },
+                error.UnclosedEscape => {
+                    try stdout.print("shell: unclosed escape\n", .{});
+                    continue :repl;
+                },
                 else => return err,
             };
             defer parsed.deinit(allocator);

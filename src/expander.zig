@@ -29,7 +29,7 @@ pub fn expand(
         defer arg.deinit(allocator);
 
         parts: for (token.parts, 0..) |part, i| {
-            if (part.is_quoted or i != 0) {
+            if (part.type != .default or i != 0) {
                 try arg.appendSlice(allocator, part.value);
                 continue;
             }
@@ -101,6 +101,22 @@ test "expander concatenates token segments into arguments" {
         "echo for\"~\"sen \"forsen\"\"for\"\"sen\"\"~\"for \"\"",
         "/Users/tester",
         &[_][]const u8{ "echo", "for~sen", "forsenforsen~for", "" },
+    );
+}
+
+test "expander concatenates escaped parser segments" {
+    try expectExpanded(
+        "foo\\ bar foo\\\"bar foo\\\\bar",
+        "/Users/tester",
+        &[_][]const u8{ "foo bar", "foo\"bar", "foo\\bar" },
+    );
+}
+
+test "expander does not home-expand escaped tildes" {
+    try expectExpanded(
+        "\\~ \\~/src",
+        "/Users/tester",
+        &[_][]const u8{ "~", "~/src" },
     );
 }
 

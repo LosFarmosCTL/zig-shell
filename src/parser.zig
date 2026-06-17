@@ -3,7 +3,13 @@ const std = @import("std");
 pub const Segment = struct {
     /// Borrows from the input passed to `parse`.
     value: []const u8,
-    is_quoted: bool,
+    type: Type,
+
+    pub const Type = enum {
+        default,
+        escaped,
+        quoted,
+    };
 };
 
 pub const Token = struct {
@@ -22,20 +28,23 @@ pub const ParsedLine = struct {
     }
 };
 
-const State = enum {
-    default,
-    quotedSingle,
-    quotedDouble,
+const State = union(enum) {
+    default: usize,
+    quotedSingle: usize,
+    quotedDouble: struct {
+        start: usize,
+        escaped: bool,
+    },
+    escaped,
 };
 
 const Parser = struct {
     allocator: std.mem.Allocator,
 
     input: []const u8,
-    state: State = .default,
+    state: State = .{ .default = 0 },
 
     i: usize = 0,
-    segment_start: usize = 0,
 
     tokens: std.ArrayList(Token) = .empty,
     segments: std.ArrayList(Segment) = .empty,
@@ -49,16 +58,24 @@ const Parser = struct {
 
     fn parse(self: *Parser) !ParsedLine {
         while (self.i < self.input.len) : (self.i += 1) {
-            const current_char = self.input[self.i];
             switch (self.state) {
-                .default => try self.handleDefault(current_char),
-                .quotedSingle => try self.handleQuoted('\'', current_char),
-                .quotedDouble => try self.handleQuoted('"', current_char),
+                .default => |start_pos| try self.handleDefault(start_pos),
+                .quotedSingle => |start_pos| try self.handleSingleQuoted(start_pos),
+                .quotedDouble => |state| try self.handleDoubleQuoted(state.start, state.escaped),
+                .escaped => {
+                    try self.appendSegment(self.i, self.i + 1, .escaped);
+                    self.state = .{ .default = self.i + 1 };
+                },
             }
         }
 
-        if (self.state != .default) return error.UnclosedQuote;
+        switch (self.state) {
+            .quotedSingle, .quotedDouble => return error.UnclosedQuote,
+            .escaped => return error.UnclosedEscape,
+            else => {},
+        }
 
+        try self.appendSegment(self.state.default, self.input.len, .default);
         try self.appendToken();
 
         const tokens = try self.tokens.toOwnedSlice(self.allocator);
@@ -66,44 +83,75 @@ const Parser = struct {
         return .{ .tokens = tokens };
     }
 
-    fn handleDefault(self: *Parser, current_char: u8) !void {
-        switch (current_char) {
+    fn handleDefault(self: *Parser, start_pos: usize) !void {
+        switch (self.input[self.i]) {
             else => return,
+
             ' ', '\t' => {
+                try self.appendSegment(start_pos, self.i, .default);
+                self.state = .{ .default = self.i + 1 };
+
                 return try self.appendToken();
             },
 
-            '\'' => self.state = .quotedSingle,
-            '"' => self.state = .quotedDouble,
+            '\'' => self.state = .{ .quotedSingle = self.i + 1 },
+            '"' => self.state = .{ .quotedDouble = .{ .start = self.i + 1, .escaped = false } },
+
+            '\\' => self.state = .escaped,
         }
 
-        try self.appendSegment(false);
+        try self.appendSegment(start_pos, self.i, .default);
     }
 
-    fn handleQuoted(self: *Parser, quote_char: u8, current_char: u8) !void {
-        if (current_char == quote_char) {
-            try self.appendSegment(true);
-            self.state = .default;
+    fn handleSingleQuoted(self: *Parser, start_pos: usize) !void {
+        if (self.input[self.i] == '\'') {
+            try self.appendSegment(start_pos, self.i, .quoted);
+            self.state = .{ .default = self.i + 1 };
         }
     }
 
-    fn appendSegment(self: *Parser, is_quoted: bool) !void {
-        const segment_start = self.segment_start;
-        self.segment_start = self.i + 1;
+    fn handleDoubleQuoted(self: *Parser, start_pos: usize, escaped: bool) !void {
+        if (escaped) {
+            switch (self.input[self.i]) {
+                '"' => {
+                    try self.appendSegment(self.i, self.i + 1, .quoted);
+                    self.state = .{ .quotedDouble = .{ .start = self.i + 1, .escaped = false } };
+                },
+                '\\' => {
+                    try self.appendSegment(self.i, self.i + 1, .quoted);
+                    self.state = .{ .quotedDouble = .{ .start = self.i + 1, .escaped = false } };
+                },
+                else => {
+                    self.state = .{ .quotedDouble = .{ .start = start_pos, .escaped = false } };
+                },
+            }
+        } else {
+            switch (self.input[self.i]) {
+                '"' => {
+                    try self.appendSegment(start_pos, self.i, .quoted);
+                    self.state = .{ .default = self.i + 1 };
+                },
+                '\\' => {
+                    try self.appendSegment(start_pos, self.i, .quoted);
+                    self.state = .{ .quotedDouble = .{ .start = self.i, .escaped = true } };
+                },
+                else => {},
+            }
+        }
+    }
 
-        if (segment_start > self.i) return;
-        if (!is_quoted and segment_start == self.i) return;
+    fn appendSegment(self: *Parser, from: usize, to: usize, segment_type: Segment.Type) !void {
+        if (from > to) return;
+        if (from == to and segment_type == .default) return;
 
-        const segment = self.input[segment_start..self.i];
+        const segment = self.input[from..to];
         try self.segments.append(self.allocator, .{
             .value = segment,
-            .is_quoted = is_quoted,
+            .type = segment_type,
         });
     }
 
     fn appendToken(self: *Parser) !void {
-        try self.appendSegment(false);
-
         if (self.segments.items.len == 0) return;
 
         const parts = try self.segments.toOwnedSlice(self.allocator);
@@ -131,7 +179,7 @@ const testing = std.testing;
 
 const ExpectedSegment = struct {
     value: []const u8,
-    is_quoted: bool,
+    type: Segment.Type,
 };
 
 fn expectToken(token: Token, expected: []const ExpectedSegment) !void {
@@ -139,7 +187,7 @@ fn expectToken(token: Token, expected: []const ExpectedSegment) !void {
 
     for (expected, token.parts) |expected_part, actual_part| {
         try testing.expectEqualSlices(u8, expected_part.value, actual_part.value);
-        try testing.expectEqual(expected_part.is_quoted, actual_part.is_quoted);
+        try testing.expectEqual(expected_part.type, actual_part.type);
     }
 }
 
@@ -163,13 +211,13 @@ test "parser splits unquoted words on spaces and tabs" {
 
     try testing.expectEqual(@as(usize, 3), parsed.tokens.len);
     try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
-        .{ .value = "echo", .is_quoted = false },
+        .{ .value = "echo", .type = .default },
     });
     try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
-        .{ .value = "for", .is_quoted = false },
+        .{ .value = "for", .type = .default },
     });
     try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
-        .{ .value = "sen", .is_quoted = false },
+        .{ .value = "sen", .type = .default },
     });
 }
 
@@ -179,13 +227,13 @@ test "parser ignores repeated leading and trailing whitespace around tokens" {
 
     try testing.expectEqual(@as(usize, 3), parsed.tokens.len);
     try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
-        .{ .value = "echo", .is_quoted = false },
+        .{ .value = "echo", .type = .default },
     });
     try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
-        .{ .value = "for", .is_quoted = false },
+        .{ .value = "for", .type = .default },
     });
     try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
-        .{ .value = "sen", .is_quoted = false },
+        .{ .value = "sen", .type = .default },
     });
 }
 
@@ -195,13 +243,13 @@ test "parser preserves whitespace inside quotes" {
 
     try testing.expectEqual(@as(usize, 3), parsed.tokens.len);
     try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
-        .{ .value = "echo", .is_quoted = false },
+        .{ .value = "echo", .type = .default },
     });
     try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
-        .{ .value = "for sen", .is_quoted = true },
+        .{ .value = "for sen", .type = .quoted },
     });
     try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
-        .{ .value = "for\tsen", .is_quoted = true },
+        .{ .value = "for\tsen", .type = .quoted },
     });
 }
 
@@ -211,10 +259,80 @@ test "parser treats opposite quote characters as literals" {
 
     try testing.expectEqual(@as(usize, 2), parsed.tokens.len);
     try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
-        .{ .value = "it's fine", .is_quoted = true },
+        .{ .value = "it's fine", .type = .quoted },
     });
     try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
-        .{ .value = "say \"hi\"", .is_quoted = true },
+        .{ .value = "say \"hi\"", .type = .quoted },
+    });
+}
+
+test "parser handles escaped characters outside quotes" {
+    const parsed = try parse(testing.allocator, "foo\\ bar foo\\\"bar foo\\\\bar \\~ \\*");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 5), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "foo", .type = .default },
+        .{ .value = " ", .type = .escaped },
+        .{ .value = "bar", .type = .default },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "foo", .type = .default },
+        .{ .value = "\"", .type = .escaped },
+        .{ .value = "bar", .type = .default },
+    });
+    try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
+        .{ .value = "foo", .type = .default },
+        .{ .value = "\\", .type = .escaped },
+        .{ .value = "bar", .type = .default },
+    });
+    try expectToken(parsed.tokens[3], &[_]ExpectedSegment{
+        .{ .value = "~", .type = .escaped },
+    });
+    try expectToken(parsed.tokens[4], &[_]ExpectedSegment{
+        .{ .value = "*", .type = .escaped },
+    });
+}
+
+test "parser preserves backslashes inside single quotes" {
+    const parsed = try parse(testing.allocator, "'a\\b \"x\"'");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "a\\b \"x\"", .type = .quoted },
+    });
+}
+
+test "parser handles escaped quote and backslash inside double quotes" {
+    const parsed = try parse(testing.allocator, "\"foo\\\"bar\" \"foo\\\\bar\"");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "foo", .type = .quoted },
+        .{ .value = "\"", .type = .quoted },
+        .{ .value = "bar", .type = .quoted },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "foo", .type = .quoted },
+        .{ .value = "\\", .type = .quoted },
+        .{ .value = "bar", .type = .quoted },
+    });
+}
+
+test "parser preserves non-special backslash escapes inside double quotes" {
+    const parsed = try parse(testing.allocator, "\"foo\\a\" \"foo\\ bar\"");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), parsed.tokens.len);
+    try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
+        .{ .value = "foo", .type = .quoted },
+        .{ .value = "\\a", .type = .quoted },
+    });
+    try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
+        .{ .value = "foo", .type = .quoted },
+        .{ .value = "\\ bar", .type = .quoted },
     });
 }
 
@@ -227,28 +345,28 @@ test "parser preserves mixed quoted and unquoted segments in one token" {
 
     try testing.expectEqual(@as(usize, 5), parsed.tokens.len);
     try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
-        .{ .value = "some/", .is_quoted = false },
-        .{ .value = "*", .is_quoted = true },
-        .{ .value = "/path", .is_quoted = false },
+        .{ .value = "some/", .type = .default },
+        .{ .value = "*", .type = .quoted },
+        .{ .value = "/path", .type = .default },
     });
     try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
-        .{ .value = "for", .is_quoted = false },
-        .{ .value = "~", .is_quoted = true },
-        .{ .value = "sen", .is_quoted = false },
+        .{ .value = "for", .type = .default },
+        .{ .value = "~", .type = .quoted },
+        .{ .value = "sen", .type = .default },
     });
     try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
-        .{ .value = "~", .is_quoted = true },
+        .{ .value = "~", .type = .quoted },
     });
     try expectToken(parsed.tokens[3], &[_]ExpectedSegment{
-        .{ .value = "~/", .is_quoted = false },
-        .{ .value = "~", .is_quoted = true },
+        .{ .value = "~/", .type = .default },
+        .{ .value = "~", .type = .quoted },
     });
     try expectToken(parsed.tokens[4], &[_]ExpectedSegment{
-        .{ .value = "forsen", .is_quoted = true },
-        .{ .value = "for", .is_quoted = true },
-        .{ .value = "sen", .is_quoted = true },
-        .{ .value = "~", .is_quoted = true },
-        .{ .value = "for", .is_quoted = false },
+        .{ .value = "forsen", .type = .quoted },
+        .{ .value = "for", .type = .quoted },
+        .{ .value = "sen", .type = .quoted },
+        .{ .value = "~", .type = .quoted },
+        .{ .value = "for", .type = .default },
     });
 }
 
@@ -258,18 +376,18 @@ test "parser preserves empty quoted arguments" {
 
     try testing.expectEqual(@as(usize, 4), parsed.tokens.len);
     try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
-        .{ .value = "echo", .is_quoted = false },
+        .{ .value = "echo", .type = .default },
     });
     try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
-        .{ .value = "", .is_quoted = true },
+        .{ .value = "", .type = .quoted },
     });
     try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
-        .{ .value = "", .is_quoted = true },
+        .{ .value = "", .type = .quoted },
     });
     try expectToken(parsed.tokens[3], &[_]ExpectedSegment{
-        .{ .value = "a", .is_quoted = false },
-        .{ .value = "", .is_quoted = true },
-        .{ .value = "b", .is_quoted = false },
+        .{ .value = "a", .type = .default },
+        .{ .value = "", .type = .quoted },
+        .{ .value = "b", .type = .default },
     });
 }
 
@@ -279,18 +397,18 @@ test "parser preserves standalone and adjacent empty quoted arguments" {
 
     try testing.expectEqual(@as(usize, 4), parsed.tokens.len);
     try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
-        .{ .value = "", .is_quoted = true },
+        .{ .value = "", .type = .quoted },
     });
     try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
-        .{ .value = "", .is_quoted = true },
+        .{ .value = "", .type = .quoted },
     });
     try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
-        .{ .value = "", .is_quoted = true },
-        .{ .value = "", .is_quoted = true },
+        .{ .value = "", .type = .quoted },
+        .{ .value = "", .type = .quoted },
     });
     try expectToken(parsed.tokens[3], &[_]ExpectedSegment{
-        .{ .value = "", .is_quoted = true },
-        .{ .value = "", .is_quoted = true },
+        .{ .value = "", .type = .quoted },
+        .{ .value = "", .type = .quoted },
     });
 }
 
@@ -300,16 +418,16 @@ test "parser preserves simple quoted segment boundaries" {
 
     try testing.expectEqual(@as(usize, 3), parsed.tokens.len);
     try expectToken(parsed.tokens[0], &[_]ExpectedSegment{
-        .{ .value = "a", .is_quoted = true },
-        .{ .value = "b", .is_quoted = false },
+        .{ .value = "a", .type = .quoted },
+        .{ .value = "b", .type = .default },
     });
     try expectToken(parsed.tokens[1], &[_]ExpectedSegment{
-        .{ .value = "a", .is_quoted = false },
-        .{ .value = "b", .is_quoted = true },
+        .{ .value = "a", .type = .default },
+        .{ .value = "b", .type = .quoted },
     });
     try expectToken(parsed.tokens[2], &[_]ExpectedSegment{
-        .{ .value = "a", .is_quoted = true },
-        .{ .value = "b", .is_quoted = true },
+        .{ .value = "a", .type = .quoted },
+        .{ .value = "b", .type = .quoted },
     });
 }
 
@@ -325,6 +443,18 @@ test "parser rejects unclosed quotes" {
     );
 }
 
+test "parser rejects trailing escapes" {
+    try testing.expectError(
+        error.UnclosedEscape,
+        parse(testing.allocator, "foo\\"),
+    );
+
+    try testing.expectError(
+        error.UnclosedEscape,
+        parse(testing.allocator, "\\"),
+    );
+}
+
 test "parser handles allocation failures without leaks" {
     for (0..32) |fail_index| {
         var failing_allocator = testing.FailingAllocator.init(testing.allocator, .{
@@ -332,7 +462,7 @@ test "parser handles allocation failures without leaks" {
         });
         const allocator = failing_allocator.allocator();
 
-        const result = parse(allocator, "echo \"for\" sen \"\" tail");
+        const result = parse(allocator, "echo \\\"for\\\" sen \"\" tail foo\\ bar \"a\\\"b\"");
         if (result) |parsed| {
             parsed.deinit(allocator);
         } else |err| switch (err) {
