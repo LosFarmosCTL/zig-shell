@@ -15,6 +15,8 @@ pub const ExpandedCommand = struct {
     argv: []const []const u8,
     stdout_path: ?[]const u8,
     stderr_path: ?[]const u8,
+    stdout_append: bool,
+    stderr_append: bool,
 
     pub fn deinit(self: ExpandedCommand, allocator: std.mem.Allocator) void {
         for (self.argv) |arg| allocator.free(arg);
@@ -74,7 +76,7 @@ pub fn expand(
 }
 
 /// Expands command arguments and removes output redirection syntax from argv.
-/// The word following `>`, `1>`, or `2>` becomes the matching stream's path.
+/// The word following a truncate or append operator becomes its stream's path.
 pub fn expandCommand(
     allocator: std.mem.Allocator,
     home_path: []const u8,
@@ -83,6 +85,8 @@ pub fn expandCommand(
     var argv = std.ArrayList([]const u8).empty;
     var stdout_path: ?[]const u8 = null;
     var stderr_path: ?[]const u8 = null;
+    var stdout_append = false;
+    var stderr_append = false;
     defer {
         for (argv.items) |arg| allocator.free(arg);
         argv.deinit(allocator);
@@ -93,20 +97,22 @@ pub fn expandCommand(
     var i: usize = 0;
     while (i < tokens.len) {
         const token = tokens[i];
-        if (token.kind == .stdout_redirect or token.kind == .stderr_redirect) {
+        if (token.kind != .word) {
             if (i + 1 >= tokens.len or tokens[i + 1].kind != .word) {
                 return error.MissingRedirectTarget;
             }
 
             const path = try expandToken(allocator, home_path, tokens[i + 1]);
             switch (token.kind) {
-                .stdout_redirect => {
+                .stdout_redirect, .stdout_append => {
                     if (stdout_path) |old_path| allocator.free(old_path);
                     stdout_path = path;
+                    stdout_append = token.kind == .stdout_append;
                 },
-                .stderr_redirect => {
+                .stderr_redirect, .stderr_append => {
                     if (stderr_path) |old_path| allocator.free(old_path);
                     stderr_path = path;
+                    stderr_append = token.kind == .stderr_append;
                 },
                 .word => unreachable,
             }
@@ -130,6 +136,8 @@ pub fn expandCommand(
         .argv = owned_argv,
         .stdout_path = owned_path,
         .stderr_path = owned_stderr_path,
+        .stdout_append = stdout_append,
+        .stderr_append = stderr_append,
     };
 }
 

@@ -73,6 +73,8 @@ pub const Shell = struct {
                 expanded.argv,
                 expanded.stdout_path,
                 expanded.stderr_path,
+                expanded.stdout_append,
+                expanded.stderr_append,
             ) catch |err| switch (err) {
                 error.ShellExit => return,
                 else => return err,
@@ -88,6 +90,8 @@ pub const Shell = struct {
         argv: []const []const u8,
         stdout_path: ?[]const u8,
         stderr_path: ?[]const u8,
+        stdout_append: bool,
+        stderr_append: bool,
     ) !void {
         const io = self.proc_init.io;
         var stdout_file: ?std.Io.File = null;
@@ -95,13 +99,24 @@ pub const Shell = struct {
         var stderr_file: ?std.Io.File = null;
         defer if (stderr_file) |file| file.close(io);
 
-        if (stdout_path) |path| stdout_file = try std.Io.Dir.cwd().createFile(io, path, .{});
-        if (stderr_path) |path| stderr_file = try std.Io.Dir.cwd().createFile(io, path, .{});
+        if (stdout_path) |path| stdout_file = try std.Io.Dir.cwd().createFile(io, path, .{
+            .truncate = !stdout_append,
+        });
+        if (stderr_path) |path| stderr_file = try std.Io.Dir.cwd().createFile(io, path, .{
+            .truncate = !stderr_append,
+        });
 
         var stdout_writer: ?std.Io.File.Writer = if (stdout_file) |file| file.writerStreaming(io, &.{}) else null;
         defer if (stdout_writer) |*writer| writer.interface.flush() catch {};
         var stderr_writer: ?std.Io.File.Writer = if (stderr_file) |file| file.writerStreaming(io, &.{}) else null;
         defer if (stderr_writer) |*writer| writer.interface.flush() catch {};
+
+        if (stdout_append) {
+            if (stdout_writer) |*writer| try writer.seekTo((try stdout_file.?.stat(io)).size);
+        }
+        if (stderr_append) {
+            if (stderr_writer) |*writer| try writer.seekTo((try stderr_file.?.stat(io)).size);
+        }
 
         const command_stdout = if (stdout_writer) |*writer| &writer.interface else terminal_stdout;
         const command_stderr = if (stderr_writer) |*writer| &writer.interface else terminal_stderr;

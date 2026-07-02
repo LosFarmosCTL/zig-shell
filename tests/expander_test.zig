@@ -131,6 +131,8 @@ test "command expansion extracts stdout redirection and its path" {
     }
     try testing.expectEqualSlices(u8, "/Users/tester/output.txt", expanded.stdout_path.?);
     try testing.expectEqual(@as(?[]const u8, null), expanded.stderr_path);
+    try testing.expect(!expanded.stdout_append);
+    try testing.expect(!expanded.stderr_append);
 }
 
 test "command expansion extracts stdout and stderr paths independently" {
@@ -150,6 +152,21 @@ test "command expansion extracts stdout and stderr paths independently" {
     }
     try testing.expectEqualSlices(u8, "output.txt", expanded.stdout_path.?);
     try testing.expectEqualSlices(u8, "/Users/tester/errors.txt", expanded.stderr_path.?);
+    try testing.expect(!expanded.stdout_append);
+    try testing.expect(!expanded.stderr_append);
+}
+
+test "command expansion preserves append modes for both streams" {
+    const parsed = try Parser.parse(testing.allocator, "echo hello 1>> output.txt 2>> errors.txt");
+    defer parsed.deinit(testing.allocator);
+
+    const expanded = try Expander.expandCommand(testing.allocator, "/Users/tester", parsed.tokens);
+    defer expanded.deinit(testing.allocator);
+
+    try testing.expectEqualSlices(u8, "output.txt", expanded.stdout_path.?);
+    try testing.expectEqualSlices(u8, "errors.txt", expanded.stderr_path.?);
+    try testing.expect(expanded.stdout_append);
+    try testing.expect(expanded.stderr_append);
 }
 
 test "command expansion rejects a redirect without a path" {

@@ -249,6 +249,17 @@ test "parser identifies stderr redirects" {
     try expectToken(parsed.tokens[4], &[_]ExpectedSegment{.{ .value = "errors.txt", .type = .default }});
 }
 
+test "parser identifies stdout and stderr append redirects" {
+    const parsed = try Parser.parse(testing.allocator, "echo first>>out 1>>out cat missing 2>>errors");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 10), parsed.tokens.len);
+    try testing.expectEqual(Parser.Token.Kind.stdout_append, parsed.tokens[2].kind);
+    try testing.expectEqual(Parser.Token.Kind.stdout_append, parsed.tokens[4].kind);
+    try testing.expectEqual(Parser.Token.Kind.stderr_append, parsed.tokens[8].kind);
+    try expectToken(parsed.tokens[2], &[_]ExpectedSegment{.{ .value = ">>", .type = .default }});
+}
+
 test "parser rejects unclosed quotes" {
     try testing.expectError(error.UnclosedQuote, Parser.parse(testing.allocator, "echo \"unterminated"));
     try testing.expectError(error.UnclosedQuote, Parser.parse(testing.allocator, "echo 'unterminated"));

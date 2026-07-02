@@ -20,6 +20,8 @@ pub const Token = struct {
         word,
         stdout_redirect,
         stderr_redirect,
+        stdout_append,
+        stderr_append,
     };
 };
 
@@ -107,8 +109,10 @@ const Parser = struct {
             '\\' => self.state = .escaped,
 
             '>' => {
+                const operator_start = self.i;
                 try self.appendSegment(start_pos, self.i, .default);
 
+                const append = self.i + 1 < self.input.len and self.input[self.i + 1] == '>';
                 var redirect_kind: Token.Kind = .stdout_redirect;
 
                 // In `1>` and `2>`, the number identifies the stream and is
@@ -129,7 +133,16 @@ const Parser = struct {
                     try self.appendToken();
                 }
 
-                try self.appendSegment(self.i, self.i + 1, .default);
+                if (append) {
+                    redirect_kind = switch (redirect_kind) {
+                        .stdout_redirect => .stdout_append,
+                        .stderr_redirect => .stderr_append,
+                        else => unreachable,
+                    };
+                    self.i += 1;
+                }
+
+                try self.appendSegment(operator_start, self.i + 1, .default);
                 try self.appendTokenKind(redirect_kind);
                 self.state = .{ .default = self.i + 1 };
                 return;
