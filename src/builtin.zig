@@ -19,6 +19,7 @@ pub const Builtin = enum {
         shell: *Shell,
         allocator: std.mem.Allocator,
         stdout: anytype,
+        stderr: anytype,
         argv: []const []const u8,
     ) !void {
         switch (self) {
@@ -37,20 +38,20 @@ pub const Builtin = enum {
             },
             .cd => {
                 if (argv.len > 2) {
-                    return try stdout.print("Too many arguments for cd command\n", .{});
+                    return try stderr.print("Too many arguments for cd command\n", .{});
                 }
 
                 var path: []const u8 = "";
                 if (argv.len == 2) path = argv[1] else {
                     if (shell.env_home.len == 0) {
-                        return try stdout.print("cd: HOME not set\n", .{});
+                        return try stderr.print("cd: HOME not set\n", .{});
                     }
 
                     path = shell.env_home;
                 }
 
                 chdir(shell.proc_init.io, path) catch {
-                    try stdout.print("cd: {s}: No such file or directory\n", .{path});
+                    try stderr.print("cd: {s}: No such file or directory\n", .{path});
                 };
             },
             .type => {

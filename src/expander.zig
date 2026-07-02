@@ -14,11 +14,13 @@ pub const ExpandedArgv = struct {
 pub const ExpandedCommand = struct {
     argv: []const []const u8,
     stdout_path: ?[]const u8,
+    stderr_path: ?[]const u8,
 
     pub fn deinit(self: ExpandedCommand, allocator: std.mem.Allocator) void {
         for (self.argv) |arg| allocator.free(arg);
         allocator.free(self.argv);
         if (self.stdout_path) |path| allocator.free(path);
+        if (self.stderr_path) |path| allocator.free(path);
     }
 };
 
@@ -71,8 +73,8 @@ pub fn expand(
     return .{ .argv = owned_argv };
 }
 
-/// Expands command arguments and removes stdout redirection syntax from argv.
-/// The word following `>` or `1>` becomes the output path.
+/// Expands command arguments and removes output redirection syntax from argv.
+/// The word following `>`, `1>`, or `2>` becomes the matching stream's path.
 pub fn expandCommand(
     allocator: std.mem.Allocator,
     home_path: []const u8,
@@ -80,24 +82,34 @@ pub fn expandCommand(
 ) !ExpandedCommand {
     var argv = std.ArrayList([]const u8).empty;
     var stdout_path: ?[]const u8 = null;
+    var stderr_path: ?[]const u8 = null;
     defer {
         for (argv.items) |arg| allocator.free(arg);
         argv.deinit(allocator);
-
         if (stdout_path) |path| allocator.free(path);
+        if (stderr_path) |path| allocator.free(path);
     }
 
     var i: usize = 0;
     while (i < tokens.len) {
         const token = tokens[i];
-        if (token.kind == .stdout_redirect) {
+        if (token.kind == .stdout_redirect or token.kind == .stderr_redirect) {
             if (i + 1 >= tokens.len or tokens[i + 1].kind != .word) {
                 return error.MissingRedirectTarget;
             }
 
             const path = try expandToken(allocator, home_path, tokens[i + 1]);
-            if (stdout_path) |old_path| allocator.free(old_path);
-            stdout_path = path;
+            switch (token.kind) {
+                .stdout_redirect => {
+                    if (stdout_path) |old_path| allocator.free(old_path);
+                    stdout_path = path;
+                },
+                .stderr_redirect => {
+                    if (stderr_path) |old_path| allocator.free(old_path);
+                    stderr_path = path;
+                },
+                .word => unreachable,
+            }
             i += 2;
             continue;
         }
@@ -111,8 +123,14 @@ pub fn expandCommand(
     const owned_argv = try argv.toOwnedSlice(allocator);
     argv = .empty;
     const owned_path = stdout_path;
+    const owned_stderr_path = stderr_path;
     stdout_path = null;
-    return .{ .argv = owned_argv, .stdout_path = owned_path };
+    stderr_path = null;
+    return .{
+        .argv = owned_argv,
+        .stdout_path = owned_path,
+        .stderr_path = owned_stderr_path,
+    };
 }
 
 fn expandToken(

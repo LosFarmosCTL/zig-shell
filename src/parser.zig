@@ -19,6 +19,7 @@ pub const Token = struct {
     pub const Kind = enum {
         word,
         stdout_redirect,
+        stderr_redirect,
     };
 };
 
@@ -108,19 +109,28 @@ const Parser = struct {
             '>' => {
                 try self.appendSegment(start_pos, self.i, .default);
 
-                // In `1>`, the 1 identifies stdout and is part of the
-                // operator rather than an argument.
+                var redirect_kind: Token.Kind = .stdout_redirect;
+
+                // In `1>` and `2>`, the number identifies the stream and is
+                // part of the operator rather than an argument.
                 if (self.segments.items.len == 1 and
-                    self.segments.items[0].type == .default and
-                    std.mem.eql(u8, self.segments.items[0].value, "1"))
+                    self.segments.items[0].type == .default)
                 {
-                    self.segments.clearRetainingCapacity();
+                    const descriptor = self.segments.items[0].value;
+                    if (std.mem.eql(u8, descriptor, "1")) {
+                        self.segments.clearRetainingCapacity();
+                    } else if (std.mem.eql(u8, descriptor, "2")) {
+                        self.segments.clearRetainingCapacity();
+                        redirect_kind = .stderr_redirect;
+                    } else {
+                        try self.appendToken();
+                    }
                 } else {
                     try self.appendToken();
                 }
 
                 try self.appendSegment(self.i, self.i + 1, .default);
-                try self.appendTokenKind(.stdout_redirect);
+                try self.appendTokenKind(redirect_kind);
                 self.state = .{ .default = self.i + 1 };
                 return;
             },

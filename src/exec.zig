@@ -39,12 +39,13 @@ pub fn spawn(
     stdout: anytype,
     argv: []const []const u8,
     stdout_file: ?std.Io.File,
+    stderr_file: ?std.Io.File,
 ) !void {
     const spawn_options: std.process.SpawnOptions = .{
         .argv = argv,
         .stdin = .inherit,
         .stdout = if (stdout_file) |file| .{ .file = file } else .inherit,
-        .stderr = .inherit,
+        .stderr = if (stderr_file) |file| .{ .file = file } else .inherit,
     };
 
     // TODO: `spawnPath` is not currently supported in zig 0.16, should switch

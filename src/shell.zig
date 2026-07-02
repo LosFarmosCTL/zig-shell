@@ -23,9 +23,13 @@ pub const Shell = struct {
     pub fn run(self: *Shell) !void {
         const io = self.proc_init.io;
 
-        var stdout_writer = std.Io.File.stdout().writer(io, &.{});
+        var stdout_writer = std.Io.File.stdout().writerStreaming(io, &.{});
         const stdout = &stdout_writer.interface;
         defer stdout.flush() catch {};
+
+        var stderr_writer = std.Io.File.stderr().writerStreaming(io, &.{});
+        const stderr = &stderr_writer.interface;
+        defer stderr.flush() catch {};
 
         var stdin_buffer: [4096]u8 = undefined;
         var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
@@ -62,7 +66,14 @@ pub const Shell = struct {
             defer expanded.deinit(allocator);
 
             if (expanded.argv.len == 0) continue :repl;
-            self.execute(allocator, stdout, expanded.argv, expanded.stdout_path) catch |err| switch (err) {
+            self.execute(
+                allocator,
+                stdout,
+                stderr,
+                expanded.argv,
+                expanded.stdout_path,
+                expanded.stderr_path,
+            ) catch |err| switch (err) {
                 error.ShellExit => return,
                 else => return err,
             };
@@ -73,38 +84,55 @@ pub const Shell = struct {
         self: *Shell,
         allocator: std.mem.Allocator,
         terminal_stdout: *std.Io.Writer,
+        terminal_stderr: *std.Io.Writer,
         argv: []const []const u8,
         stdout_path: ?[]const u8,
+        stderr_path: ?[]const u8,
     ) !void {
-        if (stdout_path) |path| {
-            const file = try std.Io.Dir.cwd().createFile(self.proc_init.io, path, .{});
-            defer file.close(self.proc_init.io);
+        const io = self.proc_init.io;
+        var stdout_file: ?std.Io.File = null;
+        defer if (stdout_file) |file| file.close(io);
+        var stderr_file: ?std.Io.File = null;
+        defer if (stderr_file) |file| file.close(io);
 
-            var file_writer = file.writer(self.proc_init.io, &.{});
-            defer file_writer.interface.flush() catch {};
+        if (stdout_path) |path| stdout_file = try std.Io.Dir.cwd().createFile(io, path, .{});
+        if (stderr_path) |path| stderr_file = try std.Io.Dir.cwd().createFile(io, path, .{});
 
-            return self.dispatch(allocator, terminal_stdout, &file_writer.interface, file, argv);
-        }
+        var stdout_writer: ?std.Io.File.Writer = if (stdout_file) |file| file.writerStreaming(io, &.{}) else null;
+        defer if (stdout_writer) |*writer| writer.interface.flush() catch {};
+        var stderr_writer: ?std.Io.File.Writer = if (stderr_file) |file| file.writerStreaming(io, &.{}) else null;
+        defer if (stderr_writer) |*writer| writer.interface.flush() catch {};
 
-        return self.dispatch(allocator, terminal_stdout, terminal_stdout, null, argv);
+        const command_stdout = if (stdout_writer) |*writer| &writer.interface else terminal_stdout;
+        const command_stderr = if (stderr_writer) |*writer| &writer.interface else terminal_stderr;
+
+        return self.dispatch(
+            allocator,
+            command_stdout,
+            command_stderr,
+            stdout_file,
+            stderr_file,
+            argv,
+        );
     }
 
     fn dispatch(
         self: *Shell,
         allocator: std.mem.Allocator,
-        terminal_stdout: *std.Io.Writer,
         command_stdout: *std.Io.Writer,
+        command_stderr: *std.Io.Writer,
         stdout_file: ?std.Io.File,
+        stderr_file: ?std.Io.File,
         argv: []const []const u8,
     ) !void {
         const command = argv[0];
 
         if (Builtin.fromString(command)) |builtin| {
-            try builtin.execute(self, allocator, command_stdout, argv);
+            try builtin.execute(self, allocator, command_stdout, command_stderr, argv);
         } else if (try Exec.findInPath(allocator, self.proc_init.io, self.env_path, command)) |_| {
-            try Exec.spawn(self, terminal_stdout, argv, stdout_file);
+            try Exec.spawn(self, command_stderr, argv, stdout_file, stderr_file);
         } else {
-            try terminal_stdout.print("{s}: command not found\n", .{command});
+            try command_stderr.print("{s}: command not found\n", .{command});
         }
     }
 };

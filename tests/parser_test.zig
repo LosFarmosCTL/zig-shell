@@ -240,6 +240,15 @@ test "parser leaves quoted and escaped redirect characters as words" {
     for (parsed.tokens) |token| try testing.expectEqual(Parser.Token.Kind.word, token.kind);
 }
 
+test "parser identifies stderr redirects" {
+    const parsed = try Parser.parse(testing.allocator, "cat existing missing 2>errors.txt");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 5), parsed.tokens.len);
+    try testing.expectEqual(Parser.Token.Kind.stderr_redirect, parsed.tokens[3].kind);
+    try expectToken(parsed.tokens[4], &[_]ExpectedSegment{.{ .value = "errors.txt", .type = .default }});
+}
+
 test "parser rejects unclosed quotes" {
     try testing.expectError(error.UnclosedQuote, Parser.parse(testing.allocator, "echo \"unterminated"));
     try testing.expectError(error.UnclosedQuote, Parser.parse(testing.allocator, "echo 'unterminated"));

@@ -130,6 +130,26 @@ test "command expansion extracts stdout redirection and its path" {
         try testing.expectEqualSlices(u8, expected_arg, actual_arg);
     }
     try testing.expectEqualSlices(u8, "/Users/tester/output.txt", expanded.stdout_path.?);
+    try testing.expectEqual(@as(?[]const u8, null), expanded.stderr_path);
+}
+
+test "command expansion extracts stdout and stderr paths independently" {
+    const parsed = try Parser.parse(
+        testing.allocator,
+        "cat existing missing > output.txt 2> ~/errors.txt",
+    );
+    defer parsed.deinit(testing.allocator);
+
+    const expanded = try Expander.expandCommand(testing.allocator, "/Users/tester", parsed.tokens);
+    defer expanded.deinit(testing.allocator);
+
+    const expected = [_][]const u8{ "cat", "existing", "missing" };
+    try testing.expectEqual(expected.len, expanded.argv.len);
+    for (expected, expanded.argv) |expected_arg, actual_arg| {
+        try testing.expectEqualSlices(u8, expected_arg, actual_arg);
+    }
+    try testing.expectEqualSlices(u8, "output.txt", expanded.stdout_path.?);
+    try testing.expectEqualSlices(u8, "/Users/tester/errors.txt", expanded.stderr_path.?);
 }
 
 test "command expansion rejects a redirect without a path" {
