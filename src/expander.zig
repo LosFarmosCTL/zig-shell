@@ -11,6 +11,17 @@ pub const ExpandedArgv = struct {
     }
 };
 
+pub const ExpandedCommand = struct {
+    argv: []const []const u8,
+    stdout_path: ?[]const u8,
+
+    pub fn deinit(self: ExpandedCommand, allocator: std.mem.Allocator) void {
+        for (self.argv) |arg| allocator.free(arg);
+        allocator.free(self.argv);
+        if (self.stdout_path) |path| allocator.free(path);
+    }
+};
+
 /// Returns an owned argv.
 /// The caller must call `deinit()` on the returned value.
 pub fn expand(
@@ -58,6 +69,76 @@ pub fn expand(
     const owned_argv = try argv.toOwnedSlice(allocator);
     argv = .empty;
     return .{ .argv = owned_argv };
+}
+
+/// Expands command arguments and removes stdout redirection syntax from argv.
+/// The word following `>` or `1>` becomes the output path.
+pub fn expandCommand(
+    allocator: std.mem.Allocator,
+    home_path: []const u8,
+    tokens: []const Parser.Token,
+) !ExpandedCommand {
+    var argv = std.ArrayList([]const u8).empty;
+    var stdout_path: ?[]const u8 = null;
+    defer {
+        for (argv.items) |arg| allocator.free(arg);
+        argv.deinit(allocator);
+
+        if (stdout_path) |path| allocator.free(path);
+    }
+
+    var i: usize = 0;
+    while (i < tokens.len) {
+        const token = tokens[i];
+        if (token.kind == .stdout_redirect) {
+            if (i + 1 >= tokens.len or tokens[i + 1].kind != .word) {
+                return error.MissingRedirectTarget;
+            }
+
+            const path = try expandToken(allocator, home_path, tokens[i + 1]);
+            if (stdout_path) |old_path| allocator.free(old_path);
+            stdout_path = path;
+            i += 2;
+            continue;
+        }
+
+        const arg = try expandToken(allocator, home_path, token);
+        errdefer allocator.free(arg);
+        try argv.append(allocator, arg);
+        i += 1;
+    }
+
+    const owned_argv = try argv.toOwnedSlice(allocator);
+    argv = .empty;
+    const owned_path = stdout_path;
+    stdout_path = null;
+    return .{ .argv = owned_argv, .stdout_path = owned_path };
+}
+
+fn expandToken(
+    allocator: std.mem.Allocator,
+    home_path: []const u8,
+    token: Parser.Token,
+) ![]const u8 {
+    var arg = std.ArrayList(u8).empty;
+    defer arg.deinit(allocator);
+
+    parts: for (token.parts, 0..) |part, i| {
+        if (part.type != .default or i != 0) {
+            try arg.appendSlice(allocator, part.value);
+            continue;
+        }
+
+        appendHomeResolved(allocator, &arg, part.value, home_path) catch |err| switch (err) {
+            error.HomeNotSet => {
+                arg.clearAndFree(allocator);
+                break :parts;
+            },
+            else => return err,
+        };
+    }
+
+    return try arg.toOwnedSlice(allocator);
 }
 
 fn appendHomeResolved(

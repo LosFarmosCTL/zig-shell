@@ -217,6 +217,29 @@ test "parser preserves simple quoted segment boundaries" {
     });
 }
 
+test "parser identifies stdout redirects without requiring spaces" {
+    const parsed = try Parser.parse(testing.allocator, "echo hello>output.txt 1>second.txt");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 6), parsed.tokens.len);
+    try testing.expectEqual(Parser.Token.Kind.word, parsed.tokens[0].kind);
+    try testing.expectEqual(Parser.Token.Kind.word, parsed.tokens[1].kind);
+    try testing.expectEqual(Parser.Token.Kind.stdout_redirect, parsed.tokens[2].kind);
+    try testing.expectEqual(Parser.Token.Kind.word, parsed.tokens[3].kind);
+    try testing.expectEqual(Parser.Token.Kind.stdout_redirect, parsed.tokens[4].kind);
+    try testing.expectEqual(Parser.Token.Kind.word, parsed.tokens[5].kind);
+    try expectToken(parsed.tokens[3], &[_]ExpectedSegment{.{ .value = "output.txt", .type = .default }});
+    try expectToken(parsed.tokens[5], &[_]ExpectedSegment{.{ .value = "second.txt", .type = .default }});
+}
+
+test "parser leaves quoted and escaped redirect characters as words" {
+    const parsed = try Parser.parse(testing.allocator, "echo '>' \"1>\" \\>");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 4), parsed.tokens.len);
+    for (parsed.tokens) |token| try testing.expectEqual(Parser.Token.Kind.word, token.kind);
+}
+
 test "parser rejects unclosed quotes" {
     try testing.expectError(error.UnclosedQuote, Parser.parse(testing.allocator, "echo \"unterminated"));
     try testing.expectError(error.UnclosedQuote, Parser.parse(testing.allocator, "echo 'unterminated"));

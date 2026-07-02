@@ -52,22 +52,59 @@ pub const Shell = struct {
             };
             defer parsed.deinit(allocator);
 
-            const expanded = try Expander.expand(allocator, self.env_home, parsed.tokens);
+            const expanded = Expander.expandCommand(allocator, self.env_home, parsed.tokens) catch |err| switch (err) {
+                error.MissingRedirectTarget => {
+                    try stdout.print("shell: expected a file after redirection\n", .{});
+                    continue :repl;
+                },
+                else => return err,
+            };
             defer expanded.deinit(allocator);
 
             if (expanded.argv.len == 0) continue :repl;
-            const command = expanded.argv[0];
+            self.execute(allocator, stdout, expanded.argv, expanded.stdout_path) catch |err| switch (err) {
+                error.ShellExit => return,
+                else => return err,
+            };
+        }
+    }
 
-            if (Builtin.fromString(command)) |builtin| {
-                builtin.execute(self, allocator, stdout, expanded.argv) catch |err| switch (err) {
-                    error.ShellExit => return,
-                    else => return err,
-                };
-            } else if (try Exec.findInPath(allocator, io, self.env_path, command)) |_| {
-                try Exec.spawn(self, stdout, expanded.argv);
-            } else {
-                try stdout.print("{s}: command not found\n", .{command});
-            }
+    fn execute(
+        self: *Shell,
+        allocator: std.mem.Allocator,
+        terminal_stdout: *std.Io.Writer,
+        argv: []const []const u8,
+        stdout_path: ?[]const u8,
+    ) !void {
+        if (stdout_path) |path| {
+            const file = try std.Io.Dir.cwd().createFile(self.proc_init.io, path, .{});
+            defer file.close(self.proc_init.io);
+
+            var file_writer = file.writer(self.proc_init.io, &.{});
+            defer file_writer.interface.flush() catch {};
+
+            return self.dispatch(allocator, terminal_stdout, &file_writer.interface, file, argv);
+        }
+
+        return self.dispatch(allocator, terminal_stdout, terminal_stdout, null, argv);
+    }
+
+    fn dispatch(
+        self: *Shell,
+        allocator: std.mem.Allocator,
+        terminal_stdout: *std.Io.Writer,
+        command_stdout: *std.Io.Writer,
+        stdout_file: ?std.Io.File,
+        argv: []const []const u8,
+    ) !void {
+        const command = argv[0];
+
+        if (Builtin.fromString(command)) |builtin| {
+            try builtin.execute(self, allocator, command_stdout, argv);
+        } else if (try Exec.findInPath(allocator, self.proc_init.io, self.env_path, command)) |_| {
+            try Exec.spawn(self, terminal_stdout, argv, stdout_file);
+        } else {
+            try terminal_stdout.print("{s}: command not found\n", .{command});
         }
     }
 };

@@ -14,6 +14,12 @@ pub const Segment = struct {
 
 pub const Token = struct {
     parts: []const Segment,
+    kind: Kind = .word,
+
+    pub const Kind = enum {
+        word,
+        stdout_redirect,
+    };
 };
 
 pub const ParsedLine = struct {
@@ -98,6 +104,26 @@ const Parser = struct {
             '"' => self.state = .{ .quotedDouble = .{ .start = self.i + 1, .escaped = false } },
 
             '\\' => self.state = .escaped,
+
+            '>' => {
+                try self.appendSegment(start_pos, self.i, .default);
+
+                // In `1>`, the 1 identifies stdout and is part of the
+                // operator rather than an argument.
+                if (self.segments.items.len == 1 and
+                    self.segments.items[0].type == .default and
+                    std.mem.eql(u8, self.segments.items[0].value, "1"))
+                {
+                    self.segments.clearRetainingCapacity();
+                } else {
+                    try self.appendToken();
+                }
+
+                try self.appendSegment(self.i, self.i + 1, .default);
+                try self.appendTokenKind(.stdout_redirect);
+                self.state = .{ .default = self.i + 1 };
+                return;
+            },
         }
 
         try self.appendSegment(start_pos, self.i, .default);
@@ -152,12 +178,16 @@ const Parser = struct {
     }
 
     fn appendToken(self: *Parser) !void {
+        return self.appendTokenKind(.word);
+    }
+
+    fn appendTokenKind(self: *Parser, kind: Token.Kind) !void {
         if (self.segments.items.len == 0) return;
 
         const parts = try self.segments.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(parts);
 
-        try self.tokens.append(self.allocator, Token{ .parts = parts });
+        try self.tokens.append(self.allocator, Token{ .parts = parts, .kind = kind });
     }
 };
 

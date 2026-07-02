@@ -34,11 +34,16 @@ pub fn findInPath(
     return null;
 }
 
-pub fn spawn(shell: *Shell, stdout: anytype, argv: []const []const u8) !void {
+pub fn spawn(
+    shell: *Shell,
+    stdout: anytype,
+    argv: []const []const u8,
+    stdout_file: ?std.Io.File,
+) !void {
     const spawn_options: std.process.SpawnOptions = .{
         .argv = argv,
         .stdin = .inherit,
-        .stdout = .inherit,
+        .stdout = if (stdout_file) |file| .{ .file = file } else .inherit,
         .stderr = .inherit,
     };
 

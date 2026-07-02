@@ -117,6 +117,53 @@ test "expander preserves non-home tokens when home is unset" {
     );
 }
 
+test "command expansion extracts stdout redirection and its path" {
+    const parsed = try Parser.parse(testing.allocator, "echo hello 1> ~/output.txt tail");
+    defer parsed.deinit(testing.allocator);
+
+    const expanded = try Expander.expandCommand(testing.allocator, "/Users/tester", parsed.tokens);
+    defer expanded.deinit(testing.allocator);
+
+    const expected = [_][]const u8{ "echo", "hello", "tail" };
+    try testing.expectEqual(expected.len, expanded.argv.len);
+    for (expected, expanded.argv) |expected_arg, actual_arg| {
+        try testing.expectEqualSlices(u8, expected_arg, actual_arg);
+    }
+    try testing.expectEqualSlices(u8, "/Users/tester/output.txt", expanded.stdout_path.?);
+}
+
+test "command expansion rejects a redirect without a path" {
+    const parsed = try Parser.parse(testing.allocator, "echo hello >");
+    defer parsed.deinit(testing.allocator);
+
+    try testing.expectError(
+        error.MissingRedirectTarget,
+        Expander.expandCommand(testing.allocator, "/Users/tester", parsed.tokens),
+    );
+}
+
+test "command expansion handles allocation failures without leaks" {
+    const parsed = try Parser.parse(testing.allocator, "echo hello > ~/output.txt tail");
+    defer parsed.deinit(testing.allocator);
+
+    for (0..48) |fail_index| {
+        var failing_allocator = testing.FailingAllocator.init(testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        const allocator = failing_allocator.allocator();
+
+        const result = Expander.expandCommand(allocator, "/Users/tester", parsed.tokens);
+        if (result) |expanded| {
+            expanded.deinit(allocator);
+        } else |err| switch (err) {
+            error.OutOfMemory => {},
+            else => return err,
+        }
+
+        try testing.expectEqual(failing_allocator.allocated_bytes, failing_allocator.freed_bytes);
+    }
+}
+
 test "expander handles allocation failures without leaks" {
     const parsed = try Parser.parse(testing.allocator, "~ ~/src for\"~\"sen \"\" tail");
     defer parsed.deinit(testing.allocator);
