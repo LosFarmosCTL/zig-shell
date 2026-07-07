@@ -43,7 +43,7 @@ pub const Shell = struct {
             const allocator = arena.allocator();
 
             try stdout.print("$ ", .{});
-            const input = (try readLine(allocator, stdin, stdout, interactive)) orelse return;
+            const input = (try self.readLine(allocator, stdin, stdout, interactive)) orelse return;
 
             const parsed = Parser.parse(allocator, input) catch |err| switch (err) {
                 error.UnclosedQuote => {
@@ -85,6 +85,7 @@ pub const Shell = struct {
     }
 
     fn readLine(
+        self: *Shell,
         allocator: std.mem.Allocator,
         stdin: *std.Io.Reader,
         stdout: *std.Io.Writer,
@@ -124,13 +125,20 @@ pub const Shell = struct {
                     return try input.toOwnedSlice(allocator);
                 },
                 '\t' => {
-                    if (Autocomplete.builtinForPrefix(input.items)) |command| {
-                        const suffix = command[input.items.len..];
-                        try input.appendSlice(allocator, suffix);
-                        try input.append(allocator, ' ');
-                        if (interactive) try stdout.print("{s} ", .{suffix});
-                    } else if (!Autocomplete.hasMatchingBuiltin(input.items)) {
-                        if (interactive) try stdout.print("\x07", .{});
+                    switch (try Autocomplete.find(
+                        allocator,
+                        self.proc_init.io,
+                        self.env_path,
+                        input.items,
+                    )) {
+                        .match => |command| {
+                            const suffix = command[input.items.len..];
+                            try input.appendSlice(allocator, suffix);
+                            try input.append(allocator, ' ');
+                            if (interactive) try stdout.print("{s} ", .{suffix});
+                        },
+                        .none => if (interactive) try stdout.print("\x07", .{}),
+                        .ambiguous => {},
                     }
                 },
                 0x7f, 0x08 => {
