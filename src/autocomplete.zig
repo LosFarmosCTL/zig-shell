@@ -2,6 +2,13 @@ const std = @import("std");
 
 const commands = [_][]const u8{ "echo", "exit" };
 
+pub fn hasMatchingBuiltin(prefix: []const u8) bool {
+    for (commands) |command| {
+        if (std.mem.startsWith(u8, command, prefix)) return true;
+    }
+    return false;
+}
+
 /// Returns the only builtin command beginning with `prefix`, or null when
 /// there is no match or the prefix is ambiguous.
 pub fn builtinForPrefix(prefix: []const u8) ?[]const u8 {

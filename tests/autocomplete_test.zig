@@ -14,3 +14,9 @@ test "autocomplete rejects unknown and ambiguous prefixes" {
     try testing.expectEqual(@as(?[]const u8, null), Autocomplete.builtinForPrefix("e"));
     try testing.expectEqual(@as(?[]const u8, null), Autocomplete.builtinForPrefix(""));
 }
+
+test "autocomplete distinguishes invalid prefixes from ambiguous ones" {
+    try testing.expect(!Autocomplete.hasMatchingBuiltin("xyz"));
+    try testing.expect(Autocomplete.hasMatchingBuiltin("e"));
+    try testing.expect(Autocomplete.hasMatchingBuiltin("ech"));
+}

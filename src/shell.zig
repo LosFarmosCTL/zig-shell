@@ -129,6 +129,8 @@ pub const Shell = struct {
                         try input.appendSlice(allocator, suffix);
                         try input.append(allocator, ' ');
                         if (interactive) try stdout.print("{s} ", .{suffix});
+                    } else if (!Autocomplete.hasMatchingBuiltin(input.items)) {
+                        if (interactive) try stdout.print("\x07", .{});
                     }
                 },
                 0x7f, 0x08 => {
