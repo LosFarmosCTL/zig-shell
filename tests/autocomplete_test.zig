@@ -31,8 +31,27 @@ test "PATH completion skips missing directories" {
 
     switch (result) {
         .match => |command| {
-            defer testing.allocator.free(command);
+            defer result.deinit(testing.allocator);
             try testing.expectEqualStrings("echo", command);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "completion returns multiple matches in alphabetical order" {
+    const result = try Autocomplete.find(
+        testing.allocator,
+        testing.io,
+        "/path/that/does/not/exist",
+        "e",
+    );
+    defer result.deinit(testing.allocator);
+
+    switch (result) {
+        .multiple => |commands| {
+            try testing.expectEqual(@as(usize, 2), commands.len);
+            try testing.expectEqualStrings("echo", commands[0]);
+            try testing.expectEqualStrings("exit", commands[1]);
         },
         else => return error.TestUnexpectedResult,
     }

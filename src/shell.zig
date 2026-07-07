@@ -109,6 +109,7 @@ pub const Shell = struct {
 
         var input = std.ArrayList(u8).empty;
         defer input.deinit(allocator);
+        var tab_pending = false;
 
         while (true) {
             const byte = stdin.takeByte() catch |err| switch (err) {
@@ -119,26 +120,48 @@ pub const Shell = struct {
                 else => return err,
             };
 
+            if (byte != '\t') tab_pending = false;
+
             switch (byte) {
                 '\r', '\n' => {
                     if (interactive) try stdout.print("\n", .{});
                     return try input.toOwnedSlice(allocator);
                 },
                 '\t' => {
-                    switch (try Autocomplete.find(
+                    const completion = try Autocomplete.find(
                         allocator,
                         self.proc_init.io,
                         self.env_path,
                         input.items,
-                    )) {
+                    );
+                    defer completion.deinit(allocator);
+
+                    switch (completion) {
                         .match => |command| {
                             const suffix = command[input.items.len..];
                             try input.appendSlice(allocator, suffix);
                             try input.append(allocator, ' ');
                             if (interactive) try stdout.print("{s} ", .{suffix});
+                            tab_pending = false;
                         },
                         .none => if (interactive) try stdout.print("\x07", .{}),
-                        .ambiguous => {},
+                        .multiple => |commands| {
+                            if (!tab_pending) {
+                                if (interactive) try stdout.print("\x07", .{});
+                                tab_pending = true;
+                                continue;
+                            }
+
+                            if (interactive) {
+                                try stdout.print("\n", .{});
+                                for (commands, 0..) |command, i| {
+                                    if (i != 0) try stdout.print("  ", .{});
+                                    try stdout.print("{s}", .{command});
+                                }
+                                try stdout.print("\n$ {s}", .{input.items});
+                            }
+                            tab_pending = false;
+                        },
                     }
                 },
                 0x7f, 0x08 => {

@@ -1,33 +1,43 @@
 const std = @import("std");
 
-const commands = [_][]const u8{ "echo", "exit" };
+const builtin_commands = [_][]const u8{ "echo", "exit" };
 
 pub const Completion = union(enum) {
     none,
-    ambiguous,
     match: []const u8,
+    multiple: []const []const u8,
+
+    pub fn deinit(self: Completion, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .none => {},
+            .match => |command| allocator.free(command),
+            .multiple => |commands| {
+                for (commands) |command| allocator.free(command);
+                allocator.free(commands);
+            },
+        }
+    }
 };
 
-/// Finds one unique executable command matching `prefix`. The matched string
-/// is owned by `allocator`.
+/// Finds executable commands matching `prefix`. Returned strings and slices
+/// are owned by `allocator`.
 pub fn find(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
     prefix: []const u8,
 ) !Completion {
-    if (prefix.len == 0) return .ambiguous;
+    if (prefix.len == 0) return .none;
 
-    var match: ?[]u8 = null;
-    errdefer if (match) |value| allocator.free(value);
+    var matches = std.ArrayList([]const u8).empty;
+    defer {
+        for (matches.items) |command| allocator.free(command);
+        matches.deinit(allocator);
+    }
 
-    for (commands) |command| {
+    for (builtin_commands) |command| {
         if (std.mem.startsWith(u8, command, prefix)) {
-            if (try addMatch(allocator, &match, command)) {
-                allocator.free(match.?);
-                match = null;
-                return .ambiguous;
-            }
+            try addMatch(allocator, &matches, command);
         }
     }
 
@@ -50,15 +60,27 @@ pub fn find(
                 .follow_symlinks = true,
             }) catch continue;
 
-            if (try addMatch(allocator, &match, entry.name)) {
-                allocator.free(match.?);
-                match = null;
-                return .ambiguous;
-            }
+            try addMatch(allocator, &matches, entry.name);
         }
     }
 
-    return if (match) |value| .{ .match = value } else .none;
+    if (matches.items.len == 0) return .none;
+    if (matches.items.len == 1) {
+        const command = matches.items[0];
+        matches.deinit(allocator);
+        matches = .empty;
+        return .{ .match = command };
+    }
+
+    std.mem.sort([]const u8, matches.items, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.lessThan(u8, lhs, rhs);
+        }
+    }.lessThan);
+
+    const owned_matches = try matches.toOwnedSlice(allocator);
+    matches = .empty;
+    return .{ .multiple = owned_matches };
 }
 
 fn openPathDir(io: std.Io, path: []const u8) ?std.Io.Dir {
@@ -70,21 +92,22 @@ fn openPathDir(io: std.Io, path: []const u8) ?std.Io.Dir {
     return std.Io.Dir.cwd().openDir(io, path, options) catch null;
 }
 
-/// Returns true when `candidate` makes the result ambiguous.
 fn addMatch(
     allocator: std.mem.Allocator,
-    match: *?[]u8,
+    matches: *std.ArrayList([]const u8),
     candidate: []const u8,
-) !bool {
-    if (match.*) |existing| {
-        return !std.mem.eql(u8, existing, candidate);
+) !void {
+    for (matches.items) |existing| {
+        if (std.mem.eql(u8, existing, candidate)) return;
     }
-    match.* = try allocator.dupe(u8, candidate);
-    return false;
+
+    const owned_candidate = try allocator.dupe(u8, candidate);
+    errdefer allocator.free(owned_candidate);
+    try matches.append(allocator, owned_candidate);
 }
 
 pub fn hasMatchingBuiltin(prefix: []const u8) bool {
-    for (commands) |command| {
+    for (builtin_commands) |command| {
         if (std.mem.startsWith(u8, command, prefix)) return true;
     }
     return false;
@@ -96,7 +119,7 @@ pub fn builtinForPrefix(prefix: []const u8) ?[]const u8 {
     if (prefix.len == 0) return null;
 
     var match: ?[]const u8 = null;
-    for (commands) |command| {
+    for (builtin_commands) |command| {
         if (!std.mem.startsWith(u8, command, prefix)) continue;
         if (match != null) return null;
         match = command;
