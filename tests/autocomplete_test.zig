@@ -1,0 +1,16 @@
+const std = @import("std");
+const Autocomplete = @import("shell").Autocomplete;
+
+const testing = std.testing;
+
+test "autocomplete finds echo and exit from unique prefixes" {
+    try testing.expectEqualStrings("echo", Autocomplete.builtinForPrefix("ech").?);
+    try testing.expectEqualStrings("exit", Autocomplete.builtinForPrefix("exi").?);
+    try testing.expectEqualStrings("echo", Autocomplete.builtinForPrefix("echo").?);
+}
+
+test "autocomplete rejects unknown and ambiguous prefixes" {
+    try testing.expectEqual(@as(?[]const u8, null), Autocomplete.builtinForPrefix("nope"));
+    try testing.expectEqual(@as(?[]const u8, null), Autocomplete.builtinForPrefix("e"));
+    try testing.expectEqual(@as(?[]const u8, null), Autocomplete.builtinForPrefix(""));
+}

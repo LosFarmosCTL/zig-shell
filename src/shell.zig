@@ -3,6 +3,7 @@ const Parser = @import("parser.zig");
 const Expander = @import("expander.zig");
 const Builtin = @import("builtin.zig").Builtin;
 const Exec = @import("exec.zig");
+const Autocomplete = @import("autocomplete.zig");
 
 pub const Shell = struct {
     proc_init: std.process.Init,
@@ -34,6 +35,7 @@ pub const Shell = struct {
         var stdin_buffer: [4096]u8 = undefined;
         var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
         const stdin = &stdin_reader.interface;
+        const interactive = try std.Io.File.stdin().isTty(io);
 
         repl: while (true) {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -41,7 +43,7 @@ pub const Shell = struct {
             const allocator = arena.allocator();
 
             try stdout.print("$ ", .{});
-            const input = (try stdin.takeDelimiter('\n')) orelse continue;
+            const input = (try readLine(allocator, stdin, stdout, interactive)) orelse return;
 
             const parsed = Parser.parse(allocator, input) catch |err| switch (err) {
                 error.UnclosedQuote => {
@@ -79,6 +81,70 @@ pub const Shell = struct {
                 error.ShellExit => return,
                 else => return err,
             };
+        }
+    }
+
+    fn readLine(
+        allocator: std.mem.Allocator,
+        stdin: *std.Io.Reader,
+        stdout: *std.Io.Writer,
+        interactive: bool,
+    ) !?[]const u8 {
+        var original_termios: ?std.posix.termios = null;
+        if (interactive) {
+            const fd = std.Io.File.stdin().handle;
+            const original = try std.posix.tcgetattr(fd);
+            var raw = original;
+            raw.lflag.ICANON = false;
+            raw.lflag.ECHO = false;
+            raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+            raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+            try std.posix.tcsetattr(fd, .NOW, raw);
+            original_termios = original;
+        }
+        defer if (original_termios) |original| {
+            std.posix.tcsetattr(std.Io.File.stdin().handle, .NOW, original) catch {};
+        };
+
+        var input = std.ArrayList(u8).empty;
+        defer input.deinit(allocator);
+
+        while (true) {
+            const byte = stdin.takeByte() catch |err| switch (err) {
+                error.EndOfStream => {
+                    if (input.items.len == 0) return null;
+                    return try input.toOwnedSlice(allocator);
+                },
+                else => return err,
+            };
+
+            switch (byte) {
+                '\r', '\n' => {
+                    if (interactive) try stdout.print("\n", .{});
+                    return try input.toOwnedSlice(allocator);
+                },
+                '\t' => {
+                    if (Autocomplete.builtinForPrefix(input.items)) |command| {
+                        const suffix = command[input.items.len..];
+                        try input.appendSlice(allocator, suffix);
+                        try input.append(allocator, ' ');
+                        if (interactive) try stdout.print("{s} ", .{suffix});
+                    }
+                },
+                0x7f, 0x08 => {
+                    if (input.items.len > 0) {
+                        _ = input.pop();
+                        if (interactive) try stdout.print("\x08 \x08", .{});
+                    }
+                },
+                0x04 => {
+                    if (input.items.len == 0) return null;
+                },
+                else => {
+                    try input.append(allocator, byte);
+                    if (interactive) try stdout.print("{c}", .{byte});
+                },
+            }
         }
     }
 
