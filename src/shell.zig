@@ -146,6 +146,15 @@ pub const Shell = struct {
                         },
                         .none => if (interactive) try stdout.print("\x07", .{}),
                         .multiple => |commands| {
+                            const common_prefix = Autocomplete.longestCommonPrefix(commands);
+                            if (common_prefix.len > input.items.len) {
+                                const suffix = common_prefix[input.items.len..];
+                                try input.appendSlice(allocator, suffix);
+                                if (interactive) try stdout.print("{s}", .{suffix});
+                                tab_pending = false;
+                                continue;
+                            }
+
                             if (!tab_pending) {
                                 if (interactive) try stdout.print("\x07", .{});
                                 tab_pending = true;

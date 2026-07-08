@@ -56,3 +56,17 @@ test "completion returns multiple matches in alphabetical order" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+test "completion finds the longest common prefix" {
+    const matches = [_][]const u8{
+        "xyz_foo",
+        "xyz_foo_bar",
+        "xyz_foo_bar_baz",
+    };
+
+    try testing.expectEqualStrings(
+        "xyz_foo",
+        Autocomplete.longestCommonPrefix(&matches),
+    );
+    try testing.expectEqualStrings("", Autocomplete.longestCommonPrefix(&.{}));
+}

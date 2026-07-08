@@ -19,6 +19,20 @@ pub const Completion = union(enum) {
     }
 };
 
+pub fn longestCommonPrefix(matches: []const []const u8) []const u8 {
+    if (matches.len == 0) return "";
+
+    const first = matches[0];
+    var prefix_len = first.len;
+    for (matches[1..]) |command| {
+        prefix_len = @min(prefix_len, command.len);
+        var i: usize = 0;
+        while (i < prefix_len and first[i] == command[i]) : (i += 1) {}
+        prefix_len = i;
+    }
+    return first[0..prefix_len];
+}
+
 /// Finds executable commands matching `prefix`. Returned strings and slices
 /// are owned by `allocator`.
 pub fn find(
